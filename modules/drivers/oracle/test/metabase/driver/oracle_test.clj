@@ -1,7 +1,7 @@
 (ns metabase.driver.oracle-test
   "Tests for specific behavior of the Oracle driver."
   (:require [clojure.java.jdbc :as jdbc]
-            [expectations :refer :all]
+            [expectations :refer [expect]]
             [metabase
              [driver :as driver]
              [query-processor :as qp]
@@ -124,3 +124,40 @@
             {:database (data/id)
              :type     :query
              :query    {:source-table (u/get-id table)}}))))))
+
+
+
+(defn- num-open-cursors
+  "Get the number of open cursors for current User"
+  []
+  (let [{:keys [details]}   (driver/with-driver :oracle (data/db))
+        spec                (sql-jdbc.conn/connection-details->spec :oracle details)
+        [{:keys [cursors]}] (jdbc/query
+                             spec
+                             [(str
+                               "SELECT sum(a.value) AS cursors "
+                               "FROM v$sesstat a, v$statname b, v$session s "
+                               "WHERE a.statistic# = b.statistic# "
+                               "  AND s.sid=a.sid "
+                               "  AND lower(s.username) = lower(?) "
+                               "  AND b.name = 'opened cursors current'")
+                              (:user details)])]
+    (some-> cursors int)))
+
+;; make sure that running the sync process doesn't leak cursors because it's not closing the ResultSets
+;; See issues #4389, #6028, and #6467
+(defn- num-open-cursors-after-n-syncs [n]
+  (dotimes [_ n]
+    (driver/describe-database :oracle (driver/with-driver :oracle (data/db))))
+  (num-open-cursors))
+
+(expect-with-driver :oracle
+  ;; although sync should not be holding any cursors open, we still need to run thru it a few times to make sure the
+  ;; connection pool is warmed up. It seems to be the case that the open connections in the connection pool keep
+  ;; cursors open or something like that.
+  ;;
+  ;; At any rate as long as the number of cursors doesn't keep going up every time we run sync (which was the original
+  ;; case) we are fine. So run sync 5 times, then 5 more; no cursors should have been leaked by that second set of 5
+  ;; syncs.
+  (num-open-cursors-after-n-syncs 5)
+  (num-open-cursors-after-n-syncs 5))

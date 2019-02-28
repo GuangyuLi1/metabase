@@ -147,16 +147,18 @@
 ;;; |                                                Running Queries                                                 |
 ;;; +----------------------------------------------------------------------------------------------------------------+
 
+(defn- do-with-ensured-connection [db f]
+  (if-let [conn (jdbc/db-find-connection db)]
+    (f conn)
+    (with-open [conn (jdbc/get-connection db)]
+      (f conn))))
+
 (defmacro ^:private with-ensured-connection
   "In many of the clojure.java.jdbc functions, it checks to see if there's already a connection open before opening a
   new one. This macro checks to see if one is open, or will open a new one. Will bind the connection to `conn-sym`."
   {:style/indent 1}
-  [[conn-sym db] & body]
-  `(let [db# ~db]
-     (if-let [~conn-sym (jdbc/db-find-connection db#)]
-       (do ~@body)
-       (with-open [~conn-sym (jdbc/get-connection db#)]
-         ~@body))))
+  [[conn-binding db] & body]
+  `(do-with-ensured-connection ~db (fn [~conn-binding] ~@body)))
 
 (defn- cancelable-run-query
   "Runs `sql` in such a way that it can be interrupted via a `future-cancel`"
